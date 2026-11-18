@@ -2,6 +2,7 @@
 frame, write exact captions, frame it 9:16, add the title bar, encode."""
 
 import json
+from pathlib import Path
 
 import numpy as np
 
