@@ -5,7 +5,7 @@ import json
 
 import numpy as np
 
-from . import captions, fetch, hook, layout, scan
+from . import captions, fetch, hinglish, hook, layout, scan
 from .util import log, pcm, probe, run, slugify
 
 PAD = 4.0   # extra seconds fetched on each side, trimmed off after alignment
@@ -93,6 +93,8 @@ def prepare(url, args, audio_file, moment, index, workdir, cfg, language, local_
                 clip_pcm = clip_pcm[: int(dur * 16000)]
 
     words, _ = scan.words_from(cfg["caption_model"], clip_pcm, language)
+    if cfg.get("ai_caption_check", True):
+        words = hinglish.ai_polish_captions(words, {"name": info.get("name", ""), "title": info.get("title", "")}, cfg)
     return {"index": index, "name": name, "moment": moment, "part": part, "info": info,
             "offset": offset, "dur": dur, "words": words,
             "analysis": layout.analyze(part, offset, offset + dur, info)}
@@ -109,9 +111,9 @@ def finish(p, outdir, workdir, cfg, known):
     m, dur, part, name = p["moment"], p["dur"], p["part"], p["name"]
     dest = outdir / f"{name}.mp4"
     log(f"[clip {p['index']}] framing + encoding", "step")
-    ass = captions.build(p["words"], 0.0, dur, workdir / f"{name}.ass", cfg)
     chain, look, cam_h = layout.graph(part, p["offset"], p["offset"] + dur, cfg, p["info"],
                                       known=known, analysis=p["analysis"])
+    ass = captions.build(p["words"], 0.0, dur, workdir / f"{name}.ass", cfg, cam_h=cam_h)
     chain += f";[vout]ass=f='{_esc(ass)}'[v]"
     cmd = ["ffmpeg", "-y", "-v", "error", "-nostdin", "-ss", f"{p['offset']:.3f}", "-t", f"{dur:.3f}",
            "-i", str(part)]

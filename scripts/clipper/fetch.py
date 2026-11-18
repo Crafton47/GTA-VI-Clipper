@@ -13,6 +13,8 @@ import shutil
 from pathlib import Path
 
 from . import hinglish
+from . import hinglish
+from . import hinglish
 from .util import log, probe, run
 
 
@@ -32,6 +34,12 @@ def base_args(url, cookies=None):
             if path:
                 args += ["--js-runtimes", f"{runtime}:{path}"]
                 break
+    # ClipKaro Windows fix: auto-detect cookies.txt first (since Windows Chrome locks its cookie DB while open)
+    skill_root = Path(__file__).resolve().parent.parent.parent
+    for ck in (Path.cwd() / "cookies.txt", skill_root / "cookies.txt", Path.home() / "viral-clips" / "cookies.txt"):
+        if ck.exists() and ck.stat().st_size > 50:
+            args += ["--cookies", str(ck)]
+            return args
     if cookies:
         args += ["--cookies-from-browser", cookies]
     return args
@@ -157,6 +165,8 @@ def youtube_subs(url, args, workdir, lo=0.0, hi=None):
     if len(words) < 20:
         return None
 
+    words = hinglish.romanize_word_list(words)
+    words = hinglish.romanize_word_list(words)
     words = hinglish.romanize_word_list(words)
     full_data = {"words": words, "language": lang}
     cache.write_text(json.dumps(full_data), encoding="utf-8")

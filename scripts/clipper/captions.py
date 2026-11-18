@@ -1,12 +1,26 @@
-"""Stage 5 — build word-by-word animated captions as an ASS subtitle file.
+"""Stage 5 — Build word-by-word animated captions as an ASS subtitle file.
 
-Renders a few words at a time with the currently-spoken word highlighted, which is the
-style that performs on TikTok/Reels/Shorts.
+Includes ClipKaro enhancements:
+- 6 Caption Styles (`--caption-style classic|box|karaoke|minimal|bold|comic`)
+- Safe-Zone & Seam Positioning (moves captions onto the facecam/gameplay seam in `stream` layout
+  and stays clear of TikTok/Reels right-side Like/Share buttons and bottom UI text)
+- Automatic Hinglish romanization & Whisper hallucination filtering
 """
 
-# Pauses shorter than this keep the previous phrase on screen instead of blinking off.
-# Longer silences do clear the caption, which reads as intentional rather than broken.
+from . import hinglish
+
 HOLD_THROUGH_PAUSE = 1.2
+
+# ClipKaro 6 caption style presets:
+# BorderStyle=1 (outline + shadow), BorderStyle=3 (opaque background box)
+STYLE_PRESETS = {
+    "classic": {"border_style": 1, "outline": 6, "shadow": 3, "back": "&H96000000", "scale": 112},
+    "box":     {"border_style": 3, "outline": 14, "shadow": 0, "back": "&HC8000000", "scale": 106},
+    "karaoke": {"border_style": 1, "outline": 7, "shadow": 4, "back": "&H96000000", "scale": 118},
+    "minimal": {"border_style": 1, "outline": 3, "shadow": 1, "back": "&H64000000", "scale": 100},
+    "bold":    {"border_style": 1, "outline": 9, "shadow": 5, "back": "&HB4000000", "scale": 116},
+    "comic":   {"border_style": 1, "outline": 8, "shadow": 6, "back": "&HFF000000", "scale": 120},
+}
 
 HEADER = """[Script Info]
 ScriptType: v4.00+
@@ -20,8 +34,8 @@ YCbCr Matrix: TV.709
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, \
 BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, \
 BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Pop,{font},{size},{primary},{primary},&H00000000,&H96000000,-1,0,0,0,100,100,0,0,\
-1,{outline},3,2,70,70,{marginv},1
+Style: Pop,{font},{size},{primary},{primary},&H00000000,{back},-1,0,0,0,100,100,0,0,\
+{border_style},{outline},{shadow},2,{margin_l},{margin_r},{marginv},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -29,7 +43,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def _ass_color(rrggbb):
-    """RRGGBB (human) -> &HBBGGRR& (ASS byte order)."""
     value = rrggbb.lstrip("#")
     return f"&H00{value[4:6]}{value[2:4]}{value[0:2]}"
 
@@ -46,7 +59,6 @@ def _escape(text):
 
 
 def _group(words, cfg):
-    """Chunk words into caption-sized phrases, breaking on pauses and sentence ends."""
     groups, current = [], []
     for index, word in enumerate(words):
         current.append(word)
@@ -66,48 +78,58 @@ def _group(words, cfg):
     return groups
 
 
-def build(words, start, end, path, cfg):
-    from . import hinglish
-    words = hinglish.romanize_word_list(words)
-    """Write an ASS file covering [start, end); timings are rebased to the clip."""
+def build(words, start, end, path, cfg, cam_h=None):
+    """Write an ASS file covering [start, end); positions captions in the safe zone."""
+    words = hinglish.strip_hallucinations(hinglish.romanize_word_list(words))
+    style_name = (cfg.get("caption_style") or "classic").lower()
+    preset = STYLE_PRESETS.get(style_name, STYLE_PRESETS["classic"])
+
     primary = _ass_color(cfg["text_color"])
     highlight = _ass_color(cfg["highlight_color"])
-    marginv = int(cfg["output_height"] * (1.0 - cfg["caption_y"]))
+
+    # ClipKaro Safe-Zone Positioning:
+    # - If `cam_h` is present (`stream` layout with facecam & gameplay), place captions near the seam
+    #   or safe lower-middle zone (`caption_y = 0.68`) so they never cover the facecam OR bottom app UI buttons!
+    # - MarginR = 135 keeps captions clear of TikTok/Reels/Shorts right-side Like/Comment/Share buttons!
+    eff_y = 0.66 if cam_h else cfg.get("caption_y", 0.70)
+    marginv = int(cfg["output_height"] * (1.0 - eff_y))
+    margin_l = 85
+    margin_r = 135
 
     lines = [HEADER.format(
         w=cfg["output_width"], h=cfg["output_height"],
         font=cfg["font"], size=cfg["font_size"],
-        primary=primary, outline=cfg["outline_width"], marginv=marginv,
+        primary=primary, back=preset["back"],
+        border_style=preset["border_style"],
+        outline=preset["outline"], shadow=preset["shadow"],
+        margin_l=margin_l, margin_r=margin_r, marginv=marginv,
     )]
-
 
     inside = [w for w in words if w["e"] > start and w["s"] < end]
     groups = _group(inside, cfg)
+    sc = preset["scale"]
 
     for gi, group in enumerate(groups):
         texts = [_escape(w["w"].strip()) for w in group]
         if cfg["uppercase"]:
             texts = [t.upper() for t in texts]
 
-        # Where the next phrase takes over — never render past it, or the two overlap.
         next_start = groups[gi + 1][0]["s"] if gi + 1 < len(groups) else end
         tail_limit = min(next_start, end)
 
         for index, word in enumerate(group):
-            # Hold each word until the next begins so captions never flicker off.
             ev_start = max(word["s"], start) - start
             if index + 1 < len(group):
                 ev_end = max(group[index + 1]["s"], word["e"]) - start
             elif tail_limit - word["e"] <= HOLD_THROUGH_PAUSE:
-                # Short breath between phrases: hold the caption so it doesn't blink out.
                 ev_end = tail_limit - start
             else:
                 ev_end = min(word["e"] + 0.3, tail_limit) - start
             if ev_end <= ev_start:
                 ev_end = ev_start + 0.08
 
-            pop = r"\fscx112\fscy112" if cfg["word_pop"] else ""
-            unpop = r"\fscx100\fscy100" if cfg["word_pop"] else ""
+            pop = f"\\fscx{sc}\\fscy{sc}" if cfg["word_pop"] and sc > 100 else ""
+            unpop = r"\fscx100\fscy100" if pop else ""
 
             rendered = []
             for j, text in enumerate(texts):

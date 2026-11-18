@@ -127,6 +127,8 @@ DEFAULTS = {
     "outline_width": 6,
     "caption_y": 0.72,
     "word_pop": True,
+    "caption_style": "classic",      # classic | box | karaoke | minimal | bold | comic
+    "ai_caption_check": True,        # ClipKaro AI caption mishearing & Hinglish polisher
 
     # --- encoding ---
     "encoder": "libx264",            # auto-switches to h264_nvenc / h264_videotoolbox with --fast

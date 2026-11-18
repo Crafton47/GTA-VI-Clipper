@@ -82,6 +82,9 @@ bash SKILL/scripts/autoclip.sh --daily-pack
 # Clip with tight 7-30s Reels/TikTok trim + auto-log to scoreboard.csv and page/media/edits/
 bash SKILL/scripts/autoclip.sh URL --tight --fast
 
+# Clip a Hindi / Desi stream with locked Hindi detection and Romanized Hinglish subtitles
+bash SKILL/scripts/autoclip.sh URL --lang hi --tight --fast
+
 # Run the Learning Loop review on scoreboard.csv to update learning.md
 bash SKILL/scripts/autoclip.sh --review
 

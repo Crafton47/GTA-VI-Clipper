@@ -48,6 +48,8 @@ def parse(argv):
                    help="with --watch-live: number of rolling live windows to capture (default 6)")
     p.add_argument("--cookies", choices=["chrome", "safari", "firefox", "brave", "edge"],
                    help="use browser login (for age-restricted YouTube or Kick)")
+    p.add_argument("--caption-style", choices=["classic", "box", "karaoke", "minimal", "bold", "comic"],
+                   help="ClipKaro caption look (default: classic)")
     p.add_argument("--layout", choices=["auto", "stream", "face", "fit"],
                    help="9:16 framing mode (default: auto)")
     p.add_argument("--provider", dest="llm_provider",
@@ -233,6 +235,7 @@ def main(argv=None):
     cfg = config.load({
         "clips_per_stream": opts.clips,
         "layout": opts.layout,
+        "caption_style": opts.caption_style,
         "llm_provider": opts.llm_provider,
         "llm_model": opts.llm_model,
         "topic": opts.topic,

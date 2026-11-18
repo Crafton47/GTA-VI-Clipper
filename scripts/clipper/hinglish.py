@@ -1,3 +1,4 @@
+import json
 """Hinglish (Romanized Hindi) converter and script detector.
 
 Ensures Hindi/Desi streams (e.g. CarryisLive, Mortal, Samay Raina, Scout, Triggered Insaan)
@@ -167,3 +168,75 @@ def romanize_word_list(words):
         if rom:
             out.append({"s": w["s"], "e": w["e"], "w": rom})
     return out
+
+
+# Whisper common hallucinations during game music, laughter, or silence (ClipKaro filter)
+WHISPER_HALLUCINATIONS = {
+    "thank you for watching", "thanks for watching", "subtitles by", "amara.org",
+    "please subscribe", "like and subscribe", "translated by", "captions by",
+    "mbc", "sbs", "♪", "♫", "[music]", "(music)",
+}
+
+
+def strip_hallucinations(words):
+    """Remove fake words Whisper invents during laughs, screams, or background game music."""
+    if not words:
+        return words
+    joined = " ".join(w.get("w", "").lower() for w in words)
+    for bad in WHISPER_HALLUCINATIONS:
+        if bad in joined and len(words) <= 6:
+            return []
+    out = []
+    for w in words:
+        tok = w.get("w", "").strip()
+        if not tok or tok.lower() in {"♪", "♫", "[music]", "(music)", "..."}:
+            continue
+        # Drop single-word stretched hallucinations (>3.5s for 1 word)
+        if (w["e"] - w["s"]) > 3.8 and len(tok) < 12:
+            w = dict(w, e=round(w["s"] + 0.9, 2))
+        out.append(w)
+    return out
+
+
+def ai_polish_captions(words, stream, cfg):
+    """ClipKaro v2.3 Caption Proofreader & Natural Hinglish Romanizer:
+    1. Deterministically converts any Devanagari/Urdu script to Roman Hinglish first.
+    2. Strips Whisper music/laugh hallucinations.
+    3. Calls the free AI router to fix clear mishearings (e.g. '2 ABHAIN, WHAT IS THIS?' -> '2 ABEY KYA HAI!')
+       and spell Hinglish the exact way Indian viewers write it online, while preserving exact word count & timestamps!
+    """
+    words = strip_hallucinations(romanize_word_list(words))
+    if not words or len(words) < 3:
+        return words
+
+    try:
+        from . import moments
+        if moments.resolve_provider(cfg) == "heuristic":
+            return words
+        indexed = [f"{i}:{w['w']}" for i, w in enumerate(words)]
+        prompt = (
+            f"You are proofing word-by-word captions for a short clip by '{stream.get('name', 'Creator')}' "
+            f"titled '{stream.get('title', '')}'.\n"
+            "Rules:\n"
+            "1. Keep the EXACT same word indices (0 to N-1) so timestamps stay 100% synced.\n"
+            "2. Fix obvious speech-to-text mishearings (e.g., 'abhain' -> 'abey', 'saari' -> 'sorry', "
+            "or scream hallucinations like 'what is this' on a Hindi stream -> 'kya hai!').\n"
+            "3. Write all Hindi/Desi words in natural Romanized Hinglish using English letters "
+            "(e.g., 'lady ko dekhne jaata hoon', 'gussa shaant', 'abey kya hai'). NEVER use Arabic, Urdu, or Devanagari script.\n"
+            "Return ONLY a JSON array of strings with the exact same length as the input list.\n\n"
+            f"INPUT ({len(words)} words):\n" + json.dumps([w["w"] for w in words])
+        )
+        raw = moments._ask(prompt, cfg)
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.S).strip()
+        m = re.search(r"\[.*\]", raw, re.S)
+        if m:
+            fixed = json.loads(m.group(0))
+            if isinstance(fixed, list) and len(fixed) == len(words):
+                out = []
+                for w, new_tok in zip(words, fixed):
+                    clean_tok = to_hinglish(str(new_tok).strip()) or w["w"]
+                    out.append({"s": w["s"], "e": w["e"], "w": clean_tok})
+                return out
+    except Exception:
+        pass
+    return words

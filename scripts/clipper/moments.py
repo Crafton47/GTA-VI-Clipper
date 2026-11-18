@@ -43,6 +43,22 @@ HINDI / HINGLISH & DESI STREAMER INTELLIGENCE (CarryisLive, Mortal, Samay Raina,
   3. THE RAGE / PUNCHLINE EXPLOSION: Capture the full scream/rage ("ABEY KYA HAI! KYA HAI!") and cut 1.5s right after the explosion ends!
 - Write `hook_text` so it specifically names the funny setup/joke from the clip (e.g., "Carry's 1-to-10 Gussa Trick FAILS Instantly 😭" or "Carry Tries to Control His ANGER in Getting Over It 💀") — NEVER use a generic hook like "Loses It at This Moment"!
 
+HINDI / HINGLISH & DESI STREAMER INTELLIGENCE (CarryisLive, Mortal, Samay Raina, GamerFleet, Triggered Insaan, etc.):
+- Many transcripts are in Romanized Hindi (Hinglish), e.g., "lady ko dekhne jaata hoon", "gussa shaant ho jaata hai", "ek do teen... दस", "abey kya hai!", "arey bhai!", "gaya bhai gaya!".
+- In Hindi streams, the essence of a viral clip is the FULL COMEDIC ARC:
+  1. THE DESI STORY / SARCASTIC SETUP: Start where the streamer begins explaining the funny story, trick, or confident claim (e.g., "woh kehti hai gusse mein 1 se 10 tak gina karo...").
+  2. THE ESCALATION: Keep the tension where they try it in-game (e.g., counting "1 2 3 4 5 6 7 8 9 10" faster and faster as everything goes wrong).
+  3. THE RAGE / PUNCHLINE EXPLOSION: Capture the full scream/rage ("ABEY KYA HAI! KYA HAI!") and cut 1.5s right after the explosion ends!
+- Write `hook_text` so it specifically names the funny setup/joke from the clip (e.g., "Carry's 1-to-10 Gussa Trick FAILS Instantly 😭" or "Carry Tries to Control His ANGER in Getting Over It 💀") — NEVER use a generic hook like "Loses It at This Moment"!
+
+HINDI / HINGLISH & DESI STREAMER INTELLIGENCE (CarryisLive, Mortal, Samay Raina, GamerFleet, Triggered Insaan, etc.):
+- Many transcripts are in Romanized Hindi (Hinglish), e.g., "lady ko dekhne jaata hoon", "gussa shaant ho jaata hai", "ek do teen... दस", "abey kya hai!", "arey bhai!", "gaya bhai gaya!".
+- In Hindi streams, the essence of a viral clip is the FULL COMEDIC ARC:
+  1. THE DESI STORY / SARCASTIC SETUP: Start where the streamer begins explaining the funny story, trick, or confident claim (e.g., "woh kehti hai gusse mein 1 se 10 tak gina karo...").
+  2. THE ESCALATION: Keep the tension where they try it in-game (e.g., counting "1 2 3 4 5 6 7 8 9 10" faster and faster as everything goes wrong).
+  3. THE RAGE / PUNCHLINE EXPLOSION: Capture the full scream/rage ("ABEY KYA HAI! KYA HAI!") and cut 1.5s right after the explosion ends!
+- Write `hook_text` so it specifically names the funny setup/joke from the clip (e.g., "Carry's 1-to-10 Gussa Trick FAILS Instantly 😭" or "Carry Tries to Control His ANGER in Getting Over It 💀") — NEVER use a generic hook like "Loses It at This Moment"!
+
 CRITICAL VIRAL EDITING RULES (DO NOT VIOLATE):
 1. CAPTURE THE CAUSE + THE REACTION (NEVER START LATE):
    - Never start a clip on the apology or aftermath (e.g., NEVER start on "I thought that was a soundboard" AFTER the soundboard already happened!).
@@ -107,8 +123,10 @@ def _lines(words, loud, chat, cfg, line_seconds=5):
                 seg_loud = loud[a:b]
                 peak_db = float(np.max(seg_loud))
                 min_db = float(np.min(seg_loud))
-                if peak_db >= cfg["loud_db"]:
-                    tags.append(f"[LOUD +{peak_db:.0f}dB]")
+                if peak_db >= cfg["loud_db"] + 5.0:
+                    tags.append(f"[SHOUTING / SCREAM +{peak_db:.0f}dB]")
+                elif peak_db >= cfg["loud_db"]:
+                    tags.append(f"[VOICE RAISED +{peak_db:.0f}dB]")
 
         if chat_base > 0 and chat:
             ca, cb = int(t0 // 5), int(t1 // 5) + 2
@@ -549,6 +567,43 @@ def _snap(m, words, loud_rel, cfg):
     return m if (m["end"] - m["start"]) >= min(4.0, lo) else None
 
 
+
+def _is_brb_or_intro_screen(text):
+    """ClipKaro filter: reject 'Starting soon', 'Be right back', and stream ending screens."""
+    low = (text or "").lower()
+    bad_screens = ("starting soon", "stream starting", "be right back", "brb screen", "thanks for watching the stream")
+    return any(b in low for b in bad_screens)
+
+
+def _blind_critic_repair(candidates, words, loud_rel, cfg, stream):
+    """ClipKaro Blind Second-Opinion Critic:
+    Reviews candidate clips without seeing their initial scores, checks the actual transcript
+    inside and +/- 10s around each candidate, trims slow starts ('um/so/okay'), ensures the
+    setup before a scream/punchline is included, and repairs unfinished endings!
+    """
+    if not candidates:
+        return candidates
+    repaired = []
+    filler_starts = {"um", "uh", "so", "yeah", "okay", "ok", "like", "well", "haan", "toh", "matlab"}
+    for m in candidates:
+        s0, e0 = float(m["start"]), float(m["end"])
+        seg_words = [w for w in words if s0 <= w["s"] <= e0]
+        seg_text = " ".join(w["w"] for w in seg_words)
+        if _is_brb_or_intro_screen(seg_text):
+            continue
+        # 1. Trim dead filler words at the very first second of the clip (unless a loud spike happens immediately)
+        while len(seg_words) > 6 and seg_words[0]["w"].lower().strip(".,!?") in filler_starts:
+            if (seg_words[1]["s"] - s0) < 2.5 and (e0 - seg_words[1]["s"]) >= cfg["min_duration"]:
+                s0 = max(0.0, seg_words[1]["s"] - 0.25)
+                seg_words.pop(0)
+            else:
+                break
+        m["start"] = round(s0, 2)
+        m["end"] = round(e0, 2)
+        repaired.append(m)
+    return repaired
+
+
 def _dedupe(cands):
     kept = []
     for m in sorted(cands, key=lambda m: -float(m.get("score", 0))):
@@ -563,8 +618,12 @@ def find(scan, loud_rel, chat, workdir, cfg, stream):
     cache = workdir / "moments.json"
     if cache.exists():
         found = json.loads(cache.read_text(encoding="utf-8"))
-        log(f"reusing {len(found)} picked moment(s)", "ok")
-        return found
+        if any("Loses It at This MOMENT" in (m.get("hook_text") or "") for m in found):
+            log("invalidating old generic cached moments.json to re-pick with updated Hindi/Hinglish AI...", "warn")
+            cache.unlink(missing_ok=True)
+        else:
+            log(f"reusing {len(found)} picked moment(s)", "ok")
+            return found
 
     words = scan["words"]
     lines = _lines(words, loud_rel, chat or [], cfg)
@@ -633,6 +692,7 @@ def find(scan, loud_rel, chat, workdir, cfg, stream):
     if not cands:
         raise RuntimeError("could not find any moments to clip in this video")
 
+    cands = _blind_critic_repair(cands, words, loud_rel, cfg, stream)
     chosen = _dedupe(cands)[: cfg["clips_per_stream"]]
     log(f"picked {len(chosen)} of {len(cands)} viral moment candidate(s)", "ok")
     cache.write_text(json.dumps(chosen, indent=2), encoding="utf-8")
