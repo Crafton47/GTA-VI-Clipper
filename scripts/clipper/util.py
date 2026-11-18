@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -51,6 +52,13 @@ def run(cmd, capture=True, check=True, timeout=None):
 
 
 def require(binary, hint=""):
+    candidates = [
+        Path(sys.prefix) / ("Scripts" if os.name == "nt" else "bin"),
+        Path.home() / ".viral-clipper" / "venv" / ("Scripts" if os.name == "nt" else "bin"),
+    ]
+    for c in candidates:
+        if c.exists() and str(c) not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = str(c) + os.pathsep + os.environ.get("PATH", "")
     if shutil.which(binary) is None:
         die(f"'{binary}' not found. {hint}")
 
