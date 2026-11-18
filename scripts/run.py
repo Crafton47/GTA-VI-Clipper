@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""autoclip / gta6clip: Drop any YouTube/Twitch/Kick link (or local video) -> ready-to-post 9:16 viral clips out.
+"""autoclip / gta6clip: Drop any YouTube/Twitch/Kick link (or local video) -> ready-to-post 9:16 viral clips out."""
 
-ZERO-FULL-DOWNLOAD MODE (Default for YouTube Videos & VODs):
-  1. Grabs YouTube's word-timed transcript (`--skip-download --sub-format json3`) + "Most Replayed" heatmap in ~2 seconds
-     WITHOUT downloading the full stream or full audio!
-  2. Free AI (`EXPLABS_API_KEY` -> `OPENROUTER_API_KEY` -> `GEMINI_API_KEY` -> `CODECRAFT_API_KEY` -> `NVIDIA_API_KEY`)
-     ranks the viral moments in ~3 seconds.
-  3. Downloads ONLY the winning 15-60s video clips (`yt-dlp --download-sections`), runs local Whisper `base` on those
-     short clips for exact pop captions, frames them 9:16, and outputs ready-to-post `.mp4` files!
-  (Falls back to full/section audio download only if a video has no captions or `--full-audio` is passed.)
-"""
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+# Auto-re-execute inside ~/.viral-clipper/venv if not already inside it
+_VENV_PY = Path.home() / ".viral-clipper" / "venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+if _VENV_PY.exists() and Path(sys.executable).resolve() != _VENV_PY.resolve():
+    os.environ["PATH"] = str(_VENV_PY.parent) + os.pathsep + os.environ.get("PATH", "")
+    res = subprocess.run([str(_VENV_PY)] + sys.argv)
+    sys.exit(res.returncode)
 
 import argparse
 import datetime
@@ -34,7 +36,7 @@ def parse(argv):
     p.add_argument("--find", action="store_true", help="find today's biggest streams for --topic / search")
     p.add_argument("--list", action="store_true", help="with --find: only list them")
     p.add_argument("--streams", type=int, default=5, help="with --find: how many streams (default 5)")
-    p.add_argument("--clips", type=int, help="clips per video/stream (default 3)")
+    p.add_argument("--clips", type=int, help="clips per video/stream (default 4)")
     p.add_argument("--parallel", type=int, default=2, help="streams processed at once (default 2)")
     p.add_argument("--section", metavar="RANGE",
                    help="only analyze & clip this part of a video/stream, e.g. \"0:10:00-0:30:00\"")
@@ -48,8 +50,14 @@ def parse(argv):
                    help="with --watch-live: number of rolling live windows to capture (default 6)")
     p.add_argument("--cookies", choices=["chrome", "safari", "firefox", "brave", "edge"],
                    help="use browser login (for age-restricted YouTube or Kick)")
+    p.add_argument("--hook-style", choices=["gta6_seam", "classic_white"],
+                   help="Hook banner style: gta6_seam (FING Plays sunset gradient) or classic_white (default: gta6_seam)")
+    p.add_argument("--captions", dest="burn_captions", action="store_true", default=None,
+                   help="burn word-by-word animated pop captions over the clip (off by default so gameplay stays clean like FING Plays Shorts)")
+    p.add_argument("--no-captions", dest="burn_captions", action="store_false",
+                   help="keep gameplay unobstructed without burned-in word captions (default)")
     p.add_argument("--caption-style", choices=["classic", "box", "karaoke", "minimal", "bold", "comic"],
-                   help="ClipKaro caption look (default: classic)")
+                   help="ClipKaro caption look when --captions is used (default: classic)")
     p.add_argument("--layout", choices=["auto", "stream", "face", "fit"],
                    help="9:16 framing mode (default: auto)")
     p.add_argument("--provider", dest="llm_provider",
@@ -60,11 +68,12 @@ def parse(argv):
     p.add_argument("--topic", help="video topic or niche hint (default: auto)")
     p.add_argument("--lang", dest="language", help="audio language code, e.g. hi for Hindi/Hinglish or en (default: auto)")
     p.add_argument("--outdir", help="custom output directory for finished clips")
-    p.add_argument("--min", dest="min_duration", type=int, help="shortest clip in seconds (default 15)")
-    p.add_argument("--max", dest="max_duration", type=int, help="longest clip in seconds (default 60)")
+    p.add_argument("--min", dest="min_duration", type=int, help="optional minimum clip duration in seconds (default: None / dynamic per clip)")
+    p.add_argument("--max", dest="max_duration", type=int, help="longest clip in seconds (default 59)")
     p.add_argument("--fast", action="store_true", help="hardware GPU encoding (NVENC / VideoToolbox / QSV)")
     p.add_argument("--keep-audio", action="store_true", help="keep the full audio file after clipping")
-    p.add_argument("--redo", action="store_true", help="re-pick moments (keeps cached transcript)")
+    p.add_argument("--redo", action="store_true", help="re-pick moments (clears cached moments & old video slices)")
+    p.add_argument("--combine", action="store_true", default=True, help="also generate a combined multi-moment showcase clip")
     p.add_argument("--tight", action="store_true", help="enforce tight 7-30s trim for Reels/TikTok (Section 6 rule)")
     p.add_argument("--init-page", action="store_true", help="initialize full Faceless Clipping Page folder & file structure (Section 15)")
     p.add_argument("--daily-pack", action="store_true", help="generate today's 6-slot daily content queue (News, HOW TO, Nostalgia, Spotlight, Countdown, Question)")
@@ -93,6 +102,10 @@ def one_stream(url, cfg, opts, live_round=None):
     with timer.stage("look up"):
         info = fetch.info(url, args, work)
     set_tag(info["name"][:18])
+    from clipper import hinglish
+    if not cfg.get("language") and hinglish.is_hindi_stream(info):
+        cfg["language"] = "hi"
+        log(f"auto-detected Hindi/Hinglish creator ({info['name']}) -> locked language='hi' (prevents English radio translation!)", "ok")
     if page_os.is_creator_blocked(info["name"], opts.page_dir):
         raise RuntimeError(f"Creator '{info['name']}' is on the takedowns.md do-not-clip list! Skipping.")
     is_live = (info.get("live_status") == "is_live") or bool(info.get("is_live")) or opts.watch_live
@@ -107,10 +120,12 @@ def one_stream(url, cfg, opts, live_round=None):
     pick_dir = work if not sec_range else work / f"part_{int(sec_range[0])}_{int(sec_range[1])}"
     pick_dir.mkdir(exist_ok=True)
     if opts.redo:
-        for f in ("moments.json", "candidates.json"):
+        for f in ("moments.json", "candidates.json", "scan.json", "yt_fast_scan.json"):
             (pick_dir / f).unlink(missing_ok=True)
+            (work / f).unlink(missing_ok=True)
+        for old_part in pick_dir.glob("part_*.mp4"):
+            old_part.unlink(missing_ok=True)
 
-    # STEP 1: Try Instant Zero-Download Transcript + Heatmap first (for YouTube VODs/videos)!
     heard = None
     audio = None
     live_video_path = None
@@ -120,23 +135,18 @@ def one_stream(url, cfg, opts, live_round=None):
         with timer.stage("instant transcript"):
             lo_q = sec_range[0] if sec_range else 0.0
             hi_q = sec_range[1] if sec_range else info.get("duration")
-            heard = fetch.youtube_subs(url, args, work, lo=lo_q, hi=hi_q)
+            heard = fetch.youtube_subs(url, args, work, lo=lo_q, hi=hi_q, stream_info=info)
 
     if heard is not None:
         length = float(info.get("duration") or heard["words"][-1]["e"])
         lo = sec_range[0] if sec_range else 0.0
         hi = sec_range[1] if sec_range else length
-        loud = fetch.heatmap_curve(info, length)
-        if not loud:
-            # No YouTube heatmap on this video -> fetch lightweight low-bitrate audio so we never miss screams/soundboards!
-            log("no YouTube replay heatmap found -> fetching fast low-bitrate audio for exact scream/soundboard dB detection...", "step")
-            audio_res = fetch.audio(url, args, work, section_range=sec_range, is_live=False, cfg=cfg)
-            audio = audio_res[0]
-            loud = scan.relative(scan.loudness(audio, work))
+        audio_res = fetch.audio(url, args, work, section_range=sec_range, is_live=False, cfg=cfg)
+        audio = audio_res[0]
+        loud = scan.relative(scan.loudness(audio, work))
         chat = scan.chat_rate(url, args, work, cfg, info)
         log(f"{info['title'][:70]}  ·  {minutes(length)} (Instant Transcript + Scream/Spike Detection ready)", "ok")
     else:
-        # Fallback: download audio (bounded if live, section-only if --section, or full audio if uncaptioned VOD)
         if is_live:
             log(f"STREAM IS LIVE! Capturing a {opts.live_minutes}-minute live window directly...", "step")
         with timer.stage("download audio"):
@@ -199,6 +209,18 @@ def one_stream(url, cfg, opts, live_round=None):
                 log(f"[clip {i}] prepare failed: {str(exc)[:300]}", "err")
         for p in ready:
             render.learn(p, cfg, known)
+        if len(ready) > cfg["clips_per_stream"]:
+            ready.sort(
+                key=lambda p: -(
+                    0.65 * float(p["moment"].get("score", 80))
+                    + 0.35 * float(p["moment"].get("visual_score", 70))
+                )
+            )
+            for dropped in ready[cfg["clips_per_stream"]:]:
+                log(f"  skipping lower-action/deadpan candidate {dropped['name']} (visual={dropped['moment'].get('visual_score', 0):.0f})", "info")
+                dropped["part"].unlink(missing_ok=True)
+            ready = ready[: cfg["clips_per_stream"]]
+            ready.sort(key=lambda p: p["index"])
         for p in ready:
             try:
                 made.append(render.finish(p, outdir, pick_dir, cfg, known))
@@ -207,6 +229,13 @@ def one_stream(url, cfg, opts, live_round=None):
 
     summary = (f"{minutes(hi - lo)} source -> {len(made)} clip(s) in {minutes(timer.total())} "
                f"(" + ", ".join(f"{k} {minutes(v)}" for k, v in timer.stages.items()) + ")")
+    if getattr(opts, "combine", True) and len(made) >= 2:
+        try:
+            sc_clip = render.combine_showcase(made, outdir, pick_dir, cfg)
+            if sc_clip:
+                made.insert(0, sc_clip)
+        except Exception as exc:
+            log(f"showcase combine note: {exc}", "warn")
     page_os.record_clips_to_page_os(outdir, stream, made, opts.page_dir)
     render.post_sheet(outdir, stream, made, summary)
     (outdir / "report.json").write_text(json.dumps({
@@ -235,6 +264,8 @@ def main(argv=None):
     cfg = config.load({
         "clips_per_stream": opts.clips,
         "layout": opts.layout,
+        "hook_style": opts.hook_style,
+        "burn_captions": opts.burn_captions,
         "caption_style": opts.caption_style,
         "llm_provider": opts.llm_provider,
         "llm_model": opts.llm_model,

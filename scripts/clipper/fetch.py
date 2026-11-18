@@ -1,10 +1,11 @@
-"""Instant metadata, YouTube caption/heatmap extraction, and targeted clip-only downloading.
+"""Instant metadata, YouTube caption/heatmap extraction, and accurate VOD/Live clip downloading.
 
-By default, for YouTube links, the full video/audio is NEVER downloaded:
-1. `info()` grabs stream metadata + YouTube's "Most Replayed" `heatmap` in ~1 second.
-2. `youtube_subs()` grabs YouTube's word-timed `json3` captions in ~2 seconds (`--skip-download`).
-3. Only after AI picks the winning 15-60s viral timestamps does `section()` download those specific clips!
-Full audio download (`audio()`) is used only as a fallback if a stream has no captions or `--full-audio` is set.
+Fixes the YouTube `/live/` & DVR stream timestamp drift bug:
+- On `/live/` or `was_live` stream URLs, `yt-dlp --download-sections` can grab segments from the
+  wrong DVR offset (e.g., grabbing a random highway bike ride instead of the detected moment).
+- `section()` now passes `--force-keyframes-at-cuts` and provides `section_direct_ffmpeg()`, which
+  resolves the underlying video+audio stream URLs via `yt-dlp -g` and seeks with `ffmpeg -ss` before `-i`
+  so the extracted clip is 100% locked to the exact timestamp of the moment!
 """
 
 import glob
@@ -12,8 +13,6 @@ import json
 import shutil
 from pathlib import Path
 
-from . import hinglish
-from . import hinglish
 from . import hinglish
 from .util import log, probe, run
 
@@ -34,7 +33,6 @@ def base_args(url, cookies=None):
             if path:
                 args += ["--js-runtimes", f"{runtime}:{path}"]
                 break
-    # ClipKaro Windows fix: auto-detect cookies.txt first (since Windows Chrome locks its cookie DB while open)
     skill_root = Path(__file__).resolve().parent.parent.parent
     for ck in (Path.cwd() / "cookies.txt", skill_root / "cookies.txt", Path.home() / "viral-clips" / "cookies.txt"):
         if ck.exists() and ck.stat().st_size > 50:
@@ -86,28 +84,35 @@ def info(url, args, workdir):
     return keep
 
 
-def youtube_subs(url, args, workdir, lo=0.0, hi=None):
+def youtube_subs(url, args, workdir, lo=0.0, hi=None, stream_info=None):
     """Fetch word-timed transcript directly from YouTube captions (--skip-download) in ~2s
-    without downloading any video or audio! Returns {"words": [...], "language": ...} or None.
+    without downloading any video or audio!
+    NOTE: If the stream is a Hindi stream (`is_hindi_stream`), we prefer Hindi (`hi`) captions first
+    and never use auto-translated English captions!
     """
     if is_local_file(url):
         return None
+    is_hi = hinglish.is_hindi_stream(stream_info or {})
     cache = workdir / "yt_fast_scan.json"
     if cache.exists():
         data = json.loads(cache.read_text(encoding="utf-8"))
-        words = hinglish.romanize_word_list([w for w in data["words"] if w["e"] > lo and (hi is None or w["s"] < hi)])
-        if len(words) >= 20:
-            log(f"reusing instant YouTube transcript ({len(words)} words, 0 MB media downloaded)", "ok")
-            return {"words": words, "language": data.get("language", "en")}
+        if is_hi and data.get("language") == "en":
+            cache.unlink(missing_ok=True)
+        else:
+            words = hinglish.romanize_word_list([w for w in data["words"] if w["e"] > lo and (hi is None or w["s"] < hi)])
+            if len(words) >= 20:
+                log(f"reusing instant YouTube transcript ({len(words)} words, 0 MB media downloaded)", "ok")
+                return {"words": words, "language": data.get("language", "hi" if is_hi else "en")}
 
     log("fetching instant transcript from YouTube (--skip-download, no full stream download)...", "step")
     for old in workdir.glob("yt_subs*"):
         old.unlink(missing_ok=True)
+    sub_langs = "hi.*,hi,en.*,en" if is_hi else "en.*,en,hi.*,hi,es.*,pt.*,fr.*,de.*,ja.*"
     try:
         run([
             "yt-dlp", "--skip-download", "--no-playlist",
             "--write-subs", "--write-auto-subs",
-            "--sub-langs", "en.*,en,hi.*,es.*,pt.*,fr.*,de.*,ja.*",
+            "--sub-langs", sub_langs,
             "--sub-format", "json3",
             "-o", str(workdir / "yt_subs"),
             *args, url,
@@ -116,12 +121,15 @@ def youtube_subs(url, args, workdir, lo=0.0, hi=None):
         log(f"instant YouTube captions unavailable ({str(exc).splitlines()[0][:80]}) -> will use audio fallback", "warn")
         return None
 
-    sub_files = sorted(workdir.glob("yt_subs*.json3"), key=lambda p: (0 if ".en" in p.name else 1, p.name))
+    if is_hi:
+        sub_files = sorted(workdir.glob("yt_subs*.json3"), key=lambda p: (0 if ".hi" in p.name else 1, p.name))
+    else:
+        sub_files = sorted(workdir.glob("yt_subs*.json3"), key=lambda p: (0 if ".en" in p.name else 1, p.name))
     if not sub_files:
         return None
 
     chosen = sub_files[0]
-    lang = "en"
+    lang = "hi" if is_hi else "en"
     parts = chosen.name.split(".")
     if len(parts) >= 3:
         lang = parts[-2].split("-")[0]
@@ -140,11 +148,10 @@ def youtube_subs(url, args, workdir, lo=0.0, hi=None):
         d_dur = float(ev.get("dDurationMs", 1500)) / 1000.0
         ev_end = t_start + max(0.2, d_dur)
 
-        # Extract word tokens with exact or interpolated timestamps
         raw_tokens = []
         for s in segs:
             txt = (s.get("utf8") or "").replace("\n", " ").strip()
-            if not txt or txt.startswith("[") and txt.endswith("]"):
+            if not txt or (txt.startswith("[") and txt.endswith("]")):
                 continue
             off = float(s.get("tOffsetMs", 0)) / 1000.0
             for piece in txt.split():
@@ -166,8 +173,6 @@ def youtube_subs(url, args, workdir, lo=0.0, hi=None):
         return None
 
     words = hinglish.romanize_word_list(words)
-    words = hinglish.romanize_word_list(words)
-    words = hinglish.romanize_word_list(words)
     full_data = {"words": words, "language": lang}
     cache.write_text(json.dumps(full_data), encoding="utf-8")
     filtered = [w for w in words if w["e"] > lo and (hi is None or w["s"] < hi)]
@@ -178,9 +183,7 @@ def youtube_subs(url, args, workdir, lo=0.0, hi=None):
 
 
 def heatmap_curve(stream_info, total_seconds):
-    """Convert YouTube's 'Most Replayed' heatmap into a dB-equivalent excitement curve
-    so [LOUD +NdB] spike detection works even with 0 MB of audio downloaded!
-    """
+    """Convert YouTube's 'Most Replayed' heatmap into a dB-equivalent excitement curve."""
     hm = stream_info.get("heatmap")
     if not hm or not isinstance(hm, list):
         return []
@@ -191,7 +194,6 @@ def heatmap_curve(stream_info, total_seconds):
             s0 = int(max(0, float(item.get("start_time", 0))))
             e0 = int(min(n_sec, float(item.get("end_time", s0 + 1)) + 1))
             val = float(item.get("value", 0.0))
-            # Scale 0..1 heatmap intensity into 0..14 dB excitement boost
             boost = round(val * 14.0, 1)
             for idx in range(s0, e0):
                 if boost > out[idx]:
@@ -225,7 +227,7 @@ def live_chunk(url, args, duration_sec, dest_mp4, cfg):
 
 
 def audio(url, args, workdir, section_range=None, is_live=False, live_minutes=10, cfg=None):
-    """Fallback audio download (only used when instant YouTube captions are unavailable or for live streams)."""
+    """Download lightweight audio track for vocal spike detection and exact frame alignment."""
     if is_local_file(url):
         src = Path(url).expanduser().resolve()
         dest = workdir / "audio.wav"
@@ -277,10 +279,49 @@ def audio(url, args, workdir, section_range=None, is_live=False, live_minutes=10
     return done[0], False
 
 
-def section(url, args, start, end, dest, cfg, local_source=None):
-    """Download ONLY the specific 15-60s viral clip segment [start, end]."""
+def section_direct_ffmpeg(url, args, start, end, dest, cfg):
+    """Fallback exact timestamp slicer for `/live/` DVR streams when `yt-dlp --download-sections`
+    grabs the wrong offset: resolves direct stream URLs via `yt-dlp -g` and seeks with `ffmpeg -ss`!
+    """
     start = max(0.0, start)
-    if dest.exists() and dest.stat().st_size > 10000:
+    dur = max(2.0, end - start)
+    h = cfg["max_height"]
+    for leftover in glob.glob(str(dest) + "*"):
+        Path(leftover).unlink(missing_ok=True)
+    raw_urls = run([
+        "yt-dlp", "--no-playlist", "-g",
+        "-f", f"bv*[height<={h}][protocol^=http]+ba[protocol^=http]/b[height<={h}]/bv*+ba/b",
+        *args, url,
+    ], timeout=120).strip().splitlines()
+    raw_urls = [u.strip() for u in raw_urls if u.strip()]
+    if not raw_urls:
+        raise RuntimeError("could not resolve direct stream URLs via yt-dlp -g")
+    if len(raw_urls) >= 2:
+        cmd = [
+            "ffmpeg", "-y", "-v", "error", "-nostdin",
+            "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", raw_urls[0],
+            "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", raw_urls[1],
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:a", "aac", str(dest),
+        ]
+    else:
+        cmd = [
+            "ffmpeg", "-y", "-v", "error", "-nostdin",
+            "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", raw_urls[0],
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "18",
+            "-c:a", "aac", str(dest),
+        ]
+    run(cmd, timeout=900)
+    if not dest.exists():
+        raise RuntimeError(f"direct ffmpeg seek failed for {start:.0f}-{end:.0f}s")
+    return dest
+
+
+def section(url, args, start, end, dest, cfg, local_source=None, force_direct=False):
+    """Download ONLY the specific viral clip segment [start, end]."""
+    start = max(0.0, start)
+    if not force_direct and dest.exists() and dest.stat().st_size > 10000:
         return dest
     src_file = local_source if local_source else (Path(url).expanduser().resolve() if is_local_file(url) else None)
     if src_file:
@@ -293,16 +334,23 @@ def section(url, args, start, end, dest, cfg, local_source=None):
         ], timeout=600)
         return dest
 
+    if force_direct:
+        return section_direct_ffmpeg(url, args, start, end, dest, cfg)
+
     h = cfg["max_height"]
     for leftover in glob.glob(str(dest) + "*"):
         Path(leftover).unlink(missing_ok=True)
-    run([
-        "yt-dlp", "--no-playlist",
-        "-f", f"bv*[height<={h}]+ba/b[height<={h}]/bv*+ba/b",
-        "--merge-output-format", "mp4",
-        "--download-sections", f"*{start:.2f}-{end:.2f}",
-        "-o", str(dest), *args, url,
-    ], timeout=1800)
+    try:
+        run([
+            "yt-dlp", "--no-playlist",
+            "-f", f"bv*[height<={h}]+ba/b[height<={h}]/bv*+ba/b",
+            "--merge-output-format", "mp4",
+            "--download-sections", f"*{start:.2f}-{end:.2f}",
+            "--force-keyframes-at-cuts",
+            "-o", str(dest), *args, url,
+        ], timeout=1800)
+    except Exception:
+        return section_direct_ffmpeg(url, args, start, end, dest, cfg)
     if not dest.exists():
-        raise RuntimeError(f"no video came back for {start:.0f}-{end:.0f}s")
+        return section_direct_ffmpeg(url, args, start, end, dest, cfg)
     return dest

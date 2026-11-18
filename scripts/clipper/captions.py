@@ -59,17 +59,24 @@ def _escape(text):
 
 
 def _group(words, cfg):
+    """Chunk words into tight 2-3 word pop phrases (max 18 chars) so captions are never long or goofy."""
     groups, current = [], []
+    max_w = min(3, int(cfg.get("words_per_group", 3)))
     for index, word in enumerate(words):
+        w_text = word["w"].strip()
+        if not w_text:
+            continue
+        cur_chars = sum(len(x["w"]) for x in current) + len(current)
+        if current and (cur_chars + len(w_text) > 18 or len(current) >= max_w):
+            groups.append(current)
+            current = []
         current.append(word)
-        text = word["w"].rstrip()
         gap_next = (words[index + 1]["s"] - word["e"]) if index + 1 < len(words) else 99
-
         if (
-            len(current) >= cfg["words_per_group"]
-            or text.endswith((".", "!", "?"))
-            or (text.endswith(",") and len(current) >= 3)
-            or gap_next > 0.55
+            len(current) >= max_w
+            or w_text.endswith((".", "!", "?"))
+            or (w_text.endswith(",") and len(current) >= 2)
+            or gap_next > 0.45
         ):
             groups.append(current)
             current = []

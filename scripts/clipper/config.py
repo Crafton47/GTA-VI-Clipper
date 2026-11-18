@@ -59,17 +59,17 @@ DEFAULTS = {
 
     # --- listening to the video/stream (100% local & free via faster-whisper) ---
     "scan_model": "tiny",            # Fast pass over the full audio
-    "caption_model": "base",         # High-accuracy pass over each chosen clip for word-by-word captions
-    "language": None,                # None = auto-detect language, or "en", "hi", etc.
+    "caption_model": "base",         # High-accuracy pass over each chosen clip for word verification & captions
+    "language": None,                # None = auto-detect language (auto-locks "hi" for Hindi streamers)
     "scan_block_minutes": 20,        # Decode audio in 20-min blocks so multi-hour videos use minimal RAM
-    "loud_db": 5.5,                  # Audio spike threshold in dB above 2-min rolling median
+    "loud_db": 5.0,                  # Audio spike threshold in dB above 2-min rolling median
     "chat": True,                    # YouTube replays: count chat messages per 5s
     "chat_timeout": 420,
 
-    # --- picking viral moments (100% FREE AI Providers) ---
-    "clips_per_stream": 3,
-    "min_duration": 10,
-    "max_duration": 35,
+    # --- picking viral moments (100% FREE AI Providers + Adaptive Scene Duration) ---
+    "clips_per_stream": 4,
+    "min_duration": None,            # None = 100% adaptive to each moment's full natural arc (never forces a fixed min!)
+    "max_duration": 59,              # Standard 60s YouTube Shorts / Reels vertical ceiling
     "chunk_minutes": 12,             # Transcript window per LLM call
     "llm_parallel": 2,               # Parallel calls (kept at 2 to respect free-tier 15-20 RPM limits)
     "llm_provider": "auto",          # auto | experiential | openrouter | gemini | codecraft | groq | nvidia | ollama | claude | heuristic
@@ -103,24 +103,26 @@ DEFAULTS = {
     "ollama_model": "qwen2.5:7b",
     "ollama_url": "http://localhost:11434",
 
-    # --- framing (9:16 portrait) ---
+    # --- framing (9:16 portrait — FING Plays / Streamer Split Default) ---
     "layout": "auto",                # auto | stream | face | fit
     "output_width": 1080,
     "output_height": 1920,
-    "cam_height": 760,               # stream layout: height of top facecam panel
+    "cam_height": 800,               # Top ~42% facecam panel (800px), bottom ~58% gameplay (1120px) like FING Plays Shorts
     "fit_aspect": 1.7778,            # fit layout: aspect ratio over blurred background
     "track_smoothing": 5,
 
-    # --- hook (top title card) ---
+    # --- hook bar (FING Plays GTA 6 Sunset-Gradient Seam Banner default) ---
+    "hook_style": "gta6_seam",       # gta6_seam (vibrant orange->pink->purple seam banner) | classic_white
     "hook_font_file": _find_hook_font(),
-    "hook_font_size": 54,
+    "hook_font_size": 52,
     "hook_y": 0.09,
-    "hook_margin_x": 130,
+    "hook_margin_x": 70,
 
-    # --- captions (TikTok/Shorts word-by-word pop subtitles) ---
+    # --- captions (Clean unobstructed gameplay by default like FING Plays reference Shorts; enable with --captions) ---
+    "burn_captions": False,          # False = clean gameplay + native game subtitles (like hwyOH_kqBX8 & YD4xQw0QtHk); True = burn word-by-word pop captions
     "font": _find_ass_font_name(),
-    "font_size": 80,
-    "words_per_group": 4,
+    "font_size": 76,
+    "words_per_group": 3,
     "uppercase": True,
     "text_color": "FFFFFF",
     "highlight_color": "FFE13B",
@@ -128,7 +130,7 @@ DEFAULTS = {
     "caption_y": 0.72,
     "word_pop": True,
     "caption_style": "classic",      # classic | box | karaoke | minimal | bold | comic
-    "ai_caption_check": True,        # ClipKaro AI caption mishearing & Hinglish polisher
+    "ai_caption_check": False,
 
     # --- encoding ---
     "encoder": "libx264",            # auto-switches to h264_nvenc / h264_videotoolbox with --fast
